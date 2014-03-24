@@ -27,6 +27,7 @@ import string
 import time
 import datetime
 import commands
+import ConfigParser
 
 
 class CloudstackAPI(object):
@@ -101,34 +102,32 @@ class CloudstackAPI(object):
         else:
             self.errors.append("missing api_key and secret_key in the constructor")
             return None
-            
-            
+
+
+
 def get_dns():
     # comment out the following line to keep a history of the requests over multiple runs (request.log will get big).
     open('request.log', 'w').close() # cleans the 'request.log' before execution so it only includes this run.
 
-    host = 'CLOUDTSACK_MANAGEMENT_SERVER_IP:PORT'
-    api_key = 'PUT_YOUR_API_KEY_HERE'
-    secret_key = 'PUT_YOUR_SECRET_KEY_HERE'
-
     cs_api = CloudstackAPI(protocol='https', host=host, api_key=api_key, secret_key=secret_key)
     output = ""
-    default_net = "cloud"
+    default_net = zone_name
+    net_suff = len(zone_name)+1
     net_dict = {}
 # Get list of networks, defined inside the Cloudstack 
     nets = cs_api.request(dict({'command':'listNetworks',
-                                        'domainid':'366668fc-eb33-11e2-baef-005056a36bde',
+                                        'domainid':domain_id,
                                         'isrecursive':'true'}))
 # Build a small dict network_name:domain out of this information
     if 'network' in nets:
         for net in nets['network']:
-            net_dict[net['name']]= net.get('networkdomain', default_net)[:-6]
+            net_dict[net['name']]= net.get('networkdomain', default_net)[:-net_suff]
     else:
         output += "\nNo Acounts on this CloudStack install...\n"
   
 
     vms = cs_api.request(dict({'command':'listVirtualMachines',
- 					'domainid':'366668fc-eb33-11e2-baef-005056a36bde',
+ 					'domainid':domain_id,
  					'isrecursive':'true'}))
     if 'virtualmachine' in vms:
         for vm in vms['virtualmachine']:
@@ -139,29 +138,58 @@ def get_dns():
     return output
 
 def dnsprint(dns):
-    soa = "$TTL 3600\t; 1 hour\n"
-    soa += "$ORIGIN cloud.\n"
-    soa += "@\t\t\tIN\tSOA\tns1.cloud. hostmaster.cloud. (\n"
+    soa = "$TTL " + ttl + "\t; 1 hour\n"
+    soa += "$ORIGIN " + zone_name + ".\n"
+    soa += "@\t\t\tIN\tSOA\tns1." + zone_name + ". hostmaster." + zone_name + ". (\n"
     serial_d =  datetime.datetime.now().strftime('%y%j%H%M%S')
     serial = int(serial_d) - 14000000000
     soa += "\t\t\t\t\t" + str(serial) + "\t; serial\n"
-    soa += "\t\t\t\t\t1800\t; refresh (30 minutes)\n"
-    soa += "\t\t\t\t\t1800\t; retry (30 minutes)\n"
+    soa += "\t\t\t\t\t"+ttl+"\t; refresh (30 minutes)\n"
+    soa += "\t\t\t\t\t"+ttl+"\t; retry (30 minutes)\n"
     soa += "\t\t\t\t\t864000\t; expire (1 week 3 days)\n"
-    soa += "\t\t\t\t\t1800\t; minimum (30 minutes)\n\t\t\t\t\t)\n"
-    soa += "\t\t\t\tNS\tns1.cloud.\n"
-    soa += "\t\t\t\tNS\tns2.cloud.\n"
-    soa += "ns1\t\t\tIN\tA\t10.150.100.15\n"
-    soa += "ns2\t\t\tIN\tA\t10.150.100.15\n"
-    soa += "@\t\t\tIN\tA\t10.150.100.15\n"
-    zone_file = open ('/var/named/chroot/var/named/internal/cloud.zone', 'w')
-    zone_file.write(soa+dns)
-    zone_file.close()
-    named_reload = commands.getoutput("rndc reload")
-#    print (soa + dns)
-#    print named_reload
+    soa += "\t\t\t\t\t"+ttl+"\t; minimum (30 minutes)\n\t\t\t\t\t)\n"
+    soa += "\t\t\t\tNS\tns1." + zone_name + ".\n"
+    soa += "\t\t\t\tNS\tns2." + zone_name + ".\n"
+    soa += "ns1\t\t\tIN\tA\t" + ns1 + "\n"
+    soa += "ns2\t\t\tIN\tA\t"+ ns2 + "\n"
+    soa += "@\t\t\tIN\tA\t" + at_zone + "\n"
+    soa += "mgmt\t\t\tIN\tA\t"+ mgmt + "\n"
+    if server == '127.0.0.1':
+        zonefile = open (zone_file, 'w')
+        zonefile.write(soa+dns)
+        zonefile.close()
+        named_reload = commands.getoutput(reload_command)
+    else:
+        zonefile = open ('/tmp/'+zone_name+'.zone', 'w')
+        zonefile.write(soa+dns)
+        zonefile.close()
+        copy_file = commands.getoutput('scp -i '+user_key+' /tmp/'+zone_name+'.zone ' +user+'@'+server+':/home/'+user+'/')
+        replace_file = commands.getoutput('ssh -n -i '+user_key+' '+user+'@'+server+' sudo "cp -f /home/'+user+'/'+zone_name+'.zone '+zone_file+'"')
+        named_reload = commands.getoutput('ssh -n -i '+user_key+' '+user+'@'+server+' sudo "'+reload_command+'"')
+        # print copy_file
+        # print replace_file
+        # print named_reload
+
+    # print (soa + dns)
 
 if __name__ == "__main__":
+    config = ConfigParser.ConfigParser()
+    config.read("dns_builder.conf")
+    host = config.get("mgmt_server", "host")
+    secret_key = config.get("mgmt_server", "secret_key")
+    api_key = config.get("mgmt_server", "api_key")
+    domain_id = config.get("mgmt_server", "domain_id")
+    zone_name = config.get("zone", "zone_name")
+    ns1 = config.get("zone", "ns1")
+    ns2 = config.get("zone", "ns2")
+    mgmt = config.get("zone", "mgmt")
+    ttl = config.get("zone", "ttl")
+    at_zone = config.get("zone", "at_zone")
+    server = config.get("dns_server", "server")
+    zone_file = config.get("dns_server", "zone_file")
+    reload_command = config.get("dns_server", "reload_command")
+    user = config.get("dns_server", "user")
+    user_key = config.get("dns_server", "user_key")
     log_file = '/var/log/cloudstack/management/catalina.out'
     words = 'DhcpEntryCommand'
     fp = open(log_file, 'r')

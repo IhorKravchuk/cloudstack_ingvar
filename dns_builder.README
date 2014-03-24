@@ -1,0 +1,3 @@
+Script dns_build.py get parameters from dns_build.conf file.
+For remote dns update you should have private key for user on dns server and sudo permissions in sudoers file:
+auto ALL= NOPASSWD: /bin/cp -f /home/auto/test.cloud.zone /var/named/chroot/var/named/internal/test.cloud.zone, /usr/sbin/rndc reload test.cloud 
